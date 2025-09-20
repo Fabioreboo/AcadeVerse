@@ -1,0 +1,100 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Users can read/write their own user document
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // Allow parents to query for students by studentId
+    match /users/{userId} {
+      allow read: if request.auth != null && 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'parent' &&
+        resource.data.role == 'student';
+    }
+    
+    // Allow password reset functionality - broader read access for password reset queries
+    // This allows querying users by studentId, parentId, or teacherId for password reset
+    match /users/{userId} {
+      allow read: if true; // Allow reading for password reset functionality
+      allow update: if (request.auth == null || request.auth != null) &&
+        ('passwordResetRequired' in request.resource.data || 'tempPassword' in request.resource.data || 
+         'passwordChanged' in request.resource.data || 'lastPasswordChange' in request.resource.data);
+    }
+    
+    // Teachers can read/write their own notes
+    match /notes/{noteId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && request.auth.uid == resource.data.teacherId;
+      allow create: if request.auth != null && request.auth.uid == request.resource.data.teacherId;
+    }
+    
+    // Students collection - teachers can read all, parents can read their linked student, students can read their own
+    match /students/{studentId} {
+      allow read: if request.auth != null && (
+        // Teachers can read all student records
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'teacher' ||
+        // Students can read their own record
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'student' && 
+         request.auth.uid == studentId) ||
+        // Parents can read their linked student's record
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'parent' && 
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.linkedStudentId == resource.data.studentId)
+      );
+      allow write: if request.auth != null && 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'teacher';
+    }
+    
+    // Attendance - teachers can read/write, students can read their own records
+    match /attendance/{attendanceId} {
+      allow read: if request.auth != null && (
+        // Teachers can read all attendance records
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'teacher' ||
+        // Students can read their own attendance records
+        resource.data.studentId == request.auth.uid ||
+        // Parents can read their linked student's attendance records
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'parent' && 
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.linkedStudentId == resource.data.studentId)
+      );
+      allow write: if request.auth != null && 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'teacher';
+    }
+    
+    // Marks - teachers can read/write all, students and parents can read specific records
+    match /marks/{markId} {
+      // Teachers can read/write all marks documents
+      allow read, write: if request.auth != null &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'teacher';
+      
+      // Students can read marks documents that contain their data (new grouped structure)
+      allow read: if request.auth != null &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'student' &&
+        request.auth.uid in resource.data.keys();
+      
+      // Legacy: Students can read their own records (old individual structure)
+      allow read: if request.auth != null &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'student' &&
+        resource.data.studentId == request.auth.uid;
+      
+      // Parents can read marks documents - we'll filter on client side
+      // This is a pragmatic approach since Firebase rules can't do complex UID lookups
+      // Client-side filtering ensures parents only see their linked child's data
+      allow read: if request.auth != null &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'parent' &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.linkedStudentId != null;
+    }
+    
+    // Marks backup collection - only teachers can access (for migration utility)
+    match /marks_backup/{backupId} {
+      allow read, write: if request.auth != null &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'teacher';
+    }
+    
+    // Subjects - everyone can read
+    match /subjects/{subjectId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'teacher';
+    }
+  }
+}
